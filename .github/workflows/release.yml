@@ -31,17 +31,20 @@ jobs:
             -ldflags "-X main.Version=${GITHUB_REF_NAME#v}" \
             -o testmo-agent .
 
-      # The tarball is what gets scp'd to a server: setup.sh resolves the
-      # binary and chain configs relative to its own location, so it needs
-      # install/ and chains/ alongside it.
+      # setup.sh resolves the binary and chain configs relative to its own
+      # location, so the tarball ships install/ and chains/ alongside the
+      # binary. Extracting it gives exactly the layout setup.sh expects.
+      #
+      # The filename deliberately has NO version in it: that is what makes
+      #   /releases/latest/download/testmo-agent-linux-amd64.tar.gz
+      # a stable URL that always points at the newest release.
       - name: Package
         run: |
           chmod +x install/setup.sh
-          tar czf "testmo-agent-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
-            testmo-agent install chains
+          tar czf testmo-agent-linux-amd64.tar.gz testmo-agent install chains
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             testmo-agent
-            testmo-agent-*.tar.gz
+            testmo-agent-linux-amd64.tar.gz
