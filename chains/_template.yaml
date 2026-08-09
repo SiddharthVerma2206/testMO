@@ -1,0 +1,63 @@
+# Copy this file to <chain>.yaml and fill it in for a new chain.
+#
+# Two ways to get a number out of a node, mix freely:
+#   1. The client exposes Prometheus itself  -> set metrics_port/metrics_path,
+#      then reference its metric names directly in metric_map.
+#   2. It doesn't (or lacks the metric)      -> add a local_call that queries
+#      the RPC, then reference that gauge by name in metric_map.
+
+chain_type: ""        # e.g. "ethereum-reth", "bitcoin-core"
+client_name: ""       # e.g. "reth", "bitcoind"
+
+# --- Native Prometheus endpoint. Omit both if the client has none. ---
+# metrics_port: 0
+# metrics_path: "/metrics"
+
+# --- Direct RPC probing. Omit this whole section if not needed. ---
+# rpc:
+#   url: "http://127.0.0.1:8545"
+#   timeout: "5s"        # default 5s
+#   interval: "15s"      # default 15s, matches the Prometheus scrape interval
+#   basic_auth:          # bitcoind and friends
+#     user: ""
+#     password: ""
+
+# Each entry publishes one Prometheus gauge named `name`.
+#
+#   type:    jsonrpc (default) POSTs {"method": ..., "params": ...} to rpc.url
+#            http_get          GETs rpc.url + method
+#   path:    dot-path into the response, numeric segments index arrays.
+#            Relative to "result" for jsonrpc, to the whole body for http_get.
+#            Omit to use the value as-is.
+#   type:    number  JSON number, or a quoted one ("12345")
+#            hex     "0x4a817c800" -> 20000000000
+#            bool    false/null -> 0, anything else -> 1
+#            count   length of a JSON array
+#            match   string lookup in `values`, falling back to `default`
+#
+# Two gauges are published automatically for every call, no config needed:
+#   probe_call_duration_ms{call="<name>"}   round-trip time
+#   probe_call_up{call="<name>"}            1 ok, 0 failed
+#
+# A call that fails drops its gauge entirely rather than going stale, so the
+# metric reads as "no data" rather than a wrong-but-plausible last value.
+#
+# local_calls:
+#   - name: "probe_syncing"
+#     method: "eth_syncing"
+#     params: []
+#     extract: {type: "bool"}
+
+# --- Required. The only place testMO_* names are defined. ---
+# Values are PromQL, so they can reference native client metrics, probe_*
+# gauges, or expressions combining them.
+metric_map:
+  testMO_block_height: ""   # current block/height
+  testMO_syncing: ""        # 0 = synced, 1 = syncing
+  testMO_peers: ""          # connected peer count
+
+# --- Optional. The dashboard renders only what appears here. ---
+optional_metrics:
+  # testMO_gas_price: "probe_gas_price"
+  # testMO_block_lag: "time() - probe_block_timestamp"
+  # testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'

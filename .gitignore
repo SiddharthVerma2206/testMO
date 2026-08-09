@@ -1,0 +1,6 @@
+# Build output (produced by `make build`, copied to servers by setup.sh)
+/testmo-agent
+
+# All notes and design docs stay local — the public repo is code only.
+# If you ever want a minimal public README, add an exception: !README.md
+*.md

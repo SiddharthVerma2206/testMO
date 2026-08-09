@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      # Runs on Linux where cgo is available, so the race detector works here
+      # even though it can't on a Windows dev box.
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-X main.Version=${GITHUB_REF_NAME#v}" \
+            -o testmo-agent .
+
+      # The tarball is what gets scp'd to a server: setup.sh resolves the
+      # binary and chain configs relative to its own location, so it needs
+      # install/ and chains/ alongside it.
+      - name: Package
+        run: |
+          chmod +x install/setup.sh
+          tar czf "testmo-agent-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
+            testmo-agent install chains
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            testmo-agent
+            testmo-agent-*.tar.gz

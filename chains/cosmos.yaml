@@ -1,0 +1,40 @@
+chain_type: "cosmos"
+client_name: "gaiad"
+
+# Tendermint/CometBFT can expose Prometheus on :26660, but only when
+# instrumentation.prometheus = true in config.toml. Left off by default so
+# setup.sh doesn't add a scrape job that permanently fails; uncomment if
+# you've enabled it.
+# metrics_port: 26660
+# metrics_path: "/metrics"
+
+# Tendermint RPC is plain HTTP GET returning JSON, not JSON-RPC POST — hence
+# type: http_get, where `method` is a URL path and `path` walks the whole
+# response body (including its own "result" envelope).
+rpc:
+  url: "http://127.0.0.1:26657"
+  timeout: "5s"
+  interval: "15s"
+
+local_calls:
+  - name: "probe_catching_up"
+    type: "http_get"
+    method: "/status"
+    extract: {path: "result.sync_info.catching_up", type: "bool"}
+
+  # Tendermint quotes its integers ("12345"); extract type number parses those.
+  - name: "probe_block_height"
+    type: "http_get"
+    method: "/status"
+    extract: {path: "result.sync_info.latest_block_height", type: "number"}
+
+  - name: "probe_peers"
+    type: "http_get"
+    method: "/net_info"
+    extract: {path: "result.n_peers", type: "number"}
+
+metric_map:
+  testMO_block_height: "probe_block_height"
+  testMO_syncing: "probe_catching_up"
+  testMO_peers: "probe_peers"
+  testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_catching_up"}'

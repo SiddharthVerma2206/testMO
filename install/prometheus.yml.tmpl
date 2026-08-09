@@ -1,0 +1,20 @@
+# Managed by testMO setup.sh — regenerated on every run.
+# Any pre-existing file is preserved alongside as prometheus.yml.bak.
+#
+# When the chain config declares a metrics_port, setup.sh appends an
+# 'rpc_client' job to the end of scrape_configs below.
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+
+  # The agent's own RPC probe results. This job is what gives probed metrics
+  # history: the agent polls the node's RPC, Prometheus scrapes the agent.
+  - job_name: 'testmo_probes'
+    metrics_path: '/internal/metrics'
+    static_configs:
+      - targets: ['127.0.0.1:{{AGENT_PORT}}']

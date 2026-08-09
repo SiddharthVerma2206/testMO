@@ -1,0 +1,21 @@
+[Unit]
+Description=testMO metrics agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=testmo
+Group=testmo
+ExecStart=/usr/local/bin/testmo-agent -config /etc/testmo/agent.yaml
+Restart=always
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

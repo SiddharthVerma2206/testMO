@@ -1,0 +1,43 @@
+chain_type: "ethereum-geth"
+client_name: "geth"
+
+# Geth needs --metrics --metrics.addr 127.0.0.1 --metrics.port 6060
+metrics_port: 6060
+metrics_path: "/debug/metrics/prometheus"
+
+rpc:
+  url: "http://127.0.0.1:8545"
+  timeout: "5s"
+  interval: "15s"
+
+local_calls:
+  # eth_syncing returns false once synced, an object while catching up.
+  - name: "probe_syncing"
+    method: "eth_syncing"
+    params: []
+    extract: {type: "bool"}
+
+  - name: "probe_gas_price"
+    method: "eth_gasPrice"
+    extract: {type: "hex"}
+
+  # Head block timestamp, so block lag can be derived in PromQL below.
+  - name: "probe_block_timestamp"
+    method: "eth_getBlockByNumber"
+    params: ["latest", false]
+    extract: {path: "timestamp", type: "hex"}
+
+metric_map:
+  # UNVERIFIED against a live node — check these two against
+  #   curl -s localhost:6060/debug/metrics/prometheus | grep -E '^# TYPE'
+  # and correct here if they differ. No rebuild needed.
+  testMO_block_height: "chain_head_header"
+  testMO_peers: "p2p_peers"
+
+  testMO_syncing: "probe_syncing"
+  testMO_block_lag: "time() - probe_block_timestamp"
+  testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
+
+optional_metrics:
+  testMO_gas_price: "probe_gas_price"
+  testMO_pending_txs: "txpool_pending"

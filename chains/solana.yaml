@@ -1,0 +1,36 @@
+chain_type: "solana"
+client_name: "agave"
+
+# Agave/Solana has no Prometheus endpoint — its native metrics push to
+# InfluxDB. Everything below therefore comes from RPC probes.
+
+rpc:
+  url: "http://127.0.0.1:8899"
+  timeout: "5s"
+  interval: "15s"
+
+local_calls:
+  # getHealth returns the string "ok" when caught up, an error object otherwise.
+  - name: "probe_health"
+    method: "getHealth"
+    extract:
+      type: "match"
+      values: {"ok": 0}
+      default: 1
+
+  - name: "probe_block_height"
+    method: "getBlockHeight"
+    extract: {type: "number"}
+
+  - name: "probe_peers"
+    method: "getClusterNodes"
+    extract: {type: "count"}
+
+metric_map:
+  testMO_block_height: "probe_block_height"
+  # An unhealthy node makes getHealth return a JSON-RPC *error*, so the probe
+  # fails and probe_health disappears rather than reporting 1. `or vector(1)`
+  # turns that absence back into "syncing".
+  testMO_syncing: "probe_health or vector(1)"
+  testMO_peers: "probe_peers"
+  testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_health"}'
