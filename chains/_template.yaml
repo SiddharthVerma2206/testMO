@@ -16,8 +16,10 @@ client_name: ""       # e.g. "reth", "bitcoind"
 # --- Direct RPC probing. Omit this whole section if not needed. ---
 # rpc:
 #   url: "http://127.0.0.1:8545"
-#   timeout: "5s"        # default 5s
-#   interval: "15s"      # default 15s, matches the Prometheus scrape interval
+#   timeout: "3s"        # default 5s; keep it under interval
+#   interval: "5s"       # default 15s. Match the Prometheus scrape interval:
+#                        # poll slower and Prometheus records the same value
+#                        # twice, poll faster and it discards the extras.
 #   basic_auth:          # bitcoind and friends
 #     user: ""
 #     password: ""

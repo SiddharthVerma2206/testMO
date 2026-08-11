@@ -6,8 +6,8 @@ client_name: "agave"
 
 rpc:
   url: "http://127.0.0.1:8899"
-  timeout: "5s"
-  interval: "15s"
+  timeout: "3s"
+  interval: "5s"
 
 local_calls:
   # getHealth returns the string "ok" when caught up, an error object otherwise.

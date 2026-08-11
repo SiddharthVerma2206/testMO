@@ -7,8 +7,15 @@ metrics_path: "/debug/metrics/prometheus"
 
 rpc:
   url: "http://127.0.0.1:8545"
-  timeout: "5s"
-  interval: "15s"
+  # Keep interval equal to the Prometheus scrape interval. Poll slower and the
+  # same value gets recorded repeatedly; poll faster and the extra polls are
+  # discarded unscraped. The two tickers aren't phase-aligned, so expect the
+  # occasional duplicate — matching the rates is what bounds the drift.
+  #
+  # timeout stays under interval: pollAll runs on the ticker's own goroutine,
+  # so a call that outlives the interval delays the next poll.
+  timeout: "3s"
+  interval: "5s"
 
 local_calls:
   # eth_syncing returns false once synced, an object while catching up.
@@ -17,15 +24,52 @@ local_calls:
     params: []
     extract: {type: "bool"}
 
+  - name: "probe_block_number"
+    method: "eth_blockNumber"
+    extract: {type: "hex"}
+
+  - name: "probe_peer_count"
+    method: "net_peerCount"
+    extract: {type: "hex"}
+
+  - name: "probe_network_id"
+    method: "net_version"
+    extract: {type: "number"}      # returns a quoted decimal, not hex
+
+  - name: "probe_chain_id"
+    method: "eth_chainId"
+    extract: {type: "hex"}
+
   - name: "probe_gas_price"
     method: "eth_gasPrice"
     extract: {type: "hex"}
 
-  # Head block timestamp, so block lag can be derived in PromQL below.
+  # One call per field — each local_call yields exactly one number.
   - name: "probe_block_timestamp"
     method: "eth_getBlockByNumber"
     params: ["latest", false]
     extract: {path: "timestamp", type: "hex"}
+
+  - name: "probe_block_gas_used"
+    method: "eth_getBlockByNumber"
+    params: ["latest", false]
+    extract: {path: "gasUsed", type: "hex"}
+
+  - name: "probe_block_gas_limit"
+    method: "eth_getBlockByNumber"
+    params: ["latest", false]
+    extract: {path: "gasLimit", type: "hex"}
+
+  - name: "probe_block_base_fee"
+    method: "eth_getBlockByNumber"
+    params: ["latest", false]
+    extract: {path: "baseFeePerGas", type: "hex"}
+
+  # params false -> transactions is an array of hashes, so count works.
+  - name: "probe_block_tx_count"
+    method: "eth_getBlockByNumber"
+    params: ["latest", false]
+    extract: {path: "transactions", type: "count"}
 
 metric_map:
   # UNVERIFIED against a live node — check these two against
@@ -39,5 +83,14 @@ metric_map:
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
 
 optional_metrics:
+  testMO_chain_id: "probe_chain_id"
+  testMO_network_id: "probe_network_id"
   testMO_gas_price: "probe_gas_price"
+  testMO_base_fee: "probe_block_base_fee"
+  testMO_block_gas_used: "probe_block_gas_used"
+  testMO_block_gas_limit: "probe_block_gas_limit"
+  testMO_block_gas_used_pct: "100 * probe_block_gas_used / probe_block_gas_limit"
+  testMO_block_tx_count: "probe_block_tx_count"
   testMO_pending_txs: "txpool_pending"
+  testMO_queued_txs: "txpool_queued"
+  testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'

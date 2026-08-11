@@ -13,8 +13,8 @@ client_name: "gaiad"
 # response body (including its own "result" envelope).
 rpc:
   url: "http://127.0.0.1:26657"
-  timeout: "5s"
-  interval: "15s"
+  timeout: "3s"
+  interval: "5s"
 
 local_calls:
   - name: "probe_catching_up"
