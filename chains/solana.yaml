@@ -10,14 +10,22 @@ rpc:
   interval: "5s"
 
 local_calls:
-  # getHealth returns the string "ok" when caught up, an error object otherwise.
+  # getHealth returns the string "ok" when caught up, and a JSON-RPC *error*
+  # when it isn't — so an unhealthy node fails this probe rather than
+  # answering it. That is a normal state, not an incident, hence optional:
+  # without it a node that is merely catching up logs a failure every 5s.
+  # The absence is not lost — testMO_syncing below reads it via `or vector(1)`.
   - name: "probe_health"
     method: "getHealth"
+    optional: true
     extract:
       type: "match"
       values: {"ok": 0}
       default: 1
 
+  # Succeeds whenever RPC is alive, regardless of sync state, which is why
+  # rpc_up and the latency metrics are measured on this call and not on
+  # getHealth — a node that is behind is not a node that is down.
   - name: "probe_block_height"
     method: "getBlockHeight"
     extract: {type: "number"}
@@ -26,11 +34,40 @@ local_calls:
     method: "getClusterNodes"
     extract: {type: "count"}
 
+# --- testMO name -> PromQL. -------------------------------------------------
+#
+# Nothing here is mandatory. The agent serves whatever these two blocks
+# define and the dashboard renders whatever the agent returns.
+
 metric_map:
-  testMO_block_height: "probe_block_height"
-  # An unhealthy node makes getHealth return a JSON-RPC *error*, so the probe
+  testMO_rpc_up: 'probe_call_up{call="probe_block_height"}'
+
+  # An unhealthy node makes getHealth return a JSON-RPC error, so the probe
   # fails and probe_health disappears rather than reporting 1. `or vector(1)`
   # turns that absence back into "syncing".
   testMO_syncing: "probe_health or vector(1)"
+
+  testMO_block_height: "probe_block_height"
   testMO_peers: "probe_peers"
-  testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_health"}'
+
+  # Is the chain actually advancing — the only sync-progress signal available
+  # here. Solana's RPC exposes no cluster-wide target slot to measure against,
+  # so there is no meaningful progress percentage; a climbing block height is
+  # what "catching up" looks like.
+  #
+  # deriv() rather than rate(): probe_block_height is a gauge.
+  testMO_blocks_per_minute: "deriv(probe_block_height[5m]) * 60"
+
+  # Agent -> 127.0.0.1:8899 on loopback. Not what a customer sees over the
+  # internet — no network path, no TLS, no nginx in this number.
+  testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_block_height"}'
+
+  # ~360 samples at a 5s scrape. p50/p95 are solid; read p99 as "worst case
+  # lately" rather than a rigorous 99th percentile. See geth.yaml for why 30m.
+  testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_block_height"}[30m])'
+  testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_block_height"}[30m])'
+  testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_block_height"}[30m])'
+
+  # Proxy for "the node restarted": each clean restart shows as 2 (down, then
+  # up). Steady state is 0.
+  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_block_height"}[1h])'

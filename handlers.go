@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// rootFS selects the one filesystem worth alerting on. Repeated rather than
+// built up by concatenation so each expression below stays greppable as the
+// PromQL it actually is.
+const rootFS = `mountpoint="/",fstype!~"tmpfs|overlay|squashfs"`
+
+// physicalNIC excludes the virtual interfaces that would otherwise be counted
+// twice. On a box running its node in Docker the same packet crosses eth0,
+// docker0 and a veth pair, and a bare device!="lo" sums all three — inflating
+// throughput 2-3x for reasons that have nothing to do with the network.
+const physicalNIC = `device!~"lo|veth.*|docker.*|br-.*|virbr.*|tap.*|tun.*"`
+
 // systemMetrics are universal across every server, so they live here rather
 // than in a chain YAML. Each expression must reduce to exactly one series —
 // hence the sum()/max() wrappers, since a box can have several NICs and
@@ -18,13 +29,38 @@ var systemMetrics = map[string]string{
 	"testMO_cpu_usage":    `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`,
 	"testMO_memory_usage": `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
 	"testMO_memory_total": `node_memory_MemTotal_bytes`,
-	"testMO_disk_usage":   `100 * (1 - max(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) / max(node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}))`,
-	"testMO_disk_total":   `max(node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})`,
-	"testMO_uptime":       `time() - node_boot_time_seconds`,
-	"testMO_network_rx":   `sum(rate(node_network_receive_bytes_total{device!="lo"}[5m]))`,
-	"testMO_network_tx":   `sum(rate(node_network_transmit_bytes_total{device!="lo"}[5m]))`,
+	"testMO_disk_usage":   `100 * (1 - max(node_filesystem_avail_bytes{` + rootFS + `}) / max(node_filesystem_size_bytes{` + rootFS + `}))`,
+	"testMO_disk_total":   `max(node_filesystem_size_bytes{` + rootFS + `})`,
 	"testMO_load_1m":      `node_load1`,
-	"testMO_load_5m":      `node_load5`,
+
+	// Bits per second, which is how a NIC is rated and how every other server
+	// tool reports throughput — node_exporter counts bytes, hence the *8.
+	//
+	// irate, not rate: irate uses only the last two samples, so at a 5s scrape
+	// this is the throughput over the last 5 seconds — live, the way `iftop`
+	// is live. The [1m] window is not an averaging window; it is just enough
+	// lookback for irate to still find two samples if a scrape was missed.
+	// The old rate(...[5m]) averaged over five minutes and diluted a 30-second
+	// burst roughly tenfold, which hid exactly the spikes worth seeing.
+	"testMO_network_rx_bps": `sum(irate(node_network_receive_bytes_total{` + physicalNIC + `}[1m])) * 8`,
+	"testMO_network_tx_bps": `sum(irate(node_network_transmit_bytes_total{` + physicalNIC + `}[1m])) * 8`,
+
+	// Days until / runs out, at the rate it has been filling over the last 6h.
+	//
+	// A chain node's disk grows monotonically and predictably, so this is
+	// forecastable in a way CPU and memory are not — and disk exhaustion is
+	// the single most common way one of these boxes dies. "83% full" does not
+	// say whether that is a problem; "6 days left" does.
+	//
+	// deriv() is the gauge-appropriate slope (least-squares over the window,
+	// no counter-reset correction). It is negative while filling, so min()
+	// picks the fastest-filling device and the leading minus makes it
+	// positive. clamp_min keeps a flat or shrinking disk from dividing by
+	// zero, and clamp_max pins the result at 999 = "not filling, don't care".
+	//
+	// Needs a couple of hours of history to mean anything; on a fresh install
+	// it reads as noise until the window fills.
+	"testMO_disk_days_until_full": `clamp_max(max(node_filesystem_avail_bytes{` + rootFS + `}) / clamp_min(-min(deriv(node_filesystem_avail_bytes{` + rootFS + `}[6h])), 1) / 86400, 999)`,
 }
 
 // maxHistoryPoints matches Prometheus' own ceiling on a range query, so an

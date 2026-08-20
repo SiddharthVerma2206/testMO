@@ -71,6 +71,20 @@ type LocalCall struct {
 	Method  string        `yaml:"method"`
 	Params  []interface{} `yaml:"params"`
 	Extract Extract       `yaml:"extract"`
+
+	// Optional marks a call that is *expected* to fail in some node states,
+	// and silences its failure log.
+	//
+	// eth_syncing is the case this exists for: it returns an object with
+	// highestBlock while catching up and the bare value false once synced, so
+	// a probe reading highestBlock fails on every poll of a healthy node. At
+	// a 5s interval that is 17,000 log lines a day saying nothing, and real
+	// probe failures drown in them.
+	//
+	// Behaviour is otherwise unchanged: the gauge still drops on failure and
+	// probe_call_up still goes to 0, so absence remains visible in PromQL.
+	// Only the log line is suppressed.
+	Optional bool `yaml:"optional"`
 }
 
 // Extract says how to turn a JSON response into a single float.

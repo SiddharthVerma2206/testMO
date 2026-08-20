@@ -122,7 +122,12 @@ func (p *Prober) pollAll(ctx context.Context) {
 			next[gaugeKey{metricCallDuration, c.Name}] = ms
 			if err != nil {
 				next[gaugeKey{metricCallUp, c.Name}] = 0
-				log.Printf("probe %s (%s): %v", c.Name, c.Method, err)
+				// An optional call failing is a normal node state, not an
+				// incident — see LocalCall.Optional. The gauge still drops
+				// and probe_call_up still reports 0; only the log is quiet.
+				if !c.Optional {
+					log.Printf("probe %s (%s): %v", c.Name, c.Method, err)
+				}
 				return
 			}
 			next[gaugeKey{metricCallUp, c.Name}] = 1
