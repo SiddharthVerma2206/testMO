@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -17,6 +18,11 @@ type AgentConfig struct {
 	PrometheusURL string `yaml:"prometheus_url"`
 	ChainConfig   string `yaml:"chain_config"`
 	NodeID        string `yaml:"node_id"`
+
+	// AllowedOrigins are the browser origins allowed to read a response, in
+	// the "scheme://host[:port]" form a browser sends in its Origin header.
+	// Empty or absent means "*" — see allowedOrigin in middleware.go.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 // ChainConfig is /etc/testmo/chains/<chain>.yaml.
@@ -120,7 +126,29 @@ func LoadAgentConfig(path string) (*AgentConfig, error) {
 	if c.APIKey == "" {
 		return nil, fmt.Errorf("%s: api_key is required", path)
 	}
+	c.AllowedOrigins = normalizeOrigins(c.AllowedOrigins)
 	return c, nil
+}
+
+// normalizeOrigins trims each entry to the form a browser actually sends —
+// no surrounding space, no trailing slash — and drops blanks.
+//
+// It rejects nothing. A malformed origin simply never matches, which is
+// already harmless, and refusing to start over a typo in this field would
+// take the whole agent down for something only a browser cares about. The
+// tidying exists because "https://dashboard.argusnodes.com/" fails silently:
+// the only symptom is a CORS error in someone else's console.
+func normalizeOrigins(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, o := range in {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // LoadChainConfig reads a chain YAML. A missing path, a missing file or an

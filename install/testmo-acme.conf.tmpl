@@ -1,0 +1,30 @@
+# testMO ACME challenge vhost — /etc/nginx/sites-available/testmo-acme
+#
+# Rendered by setup.sh when --domain is passed. Exists only so Let's Encrypt
+# can validate {{DOMAIN}} over HTTP-01, which happens on port 80 at first issue
+# and again at every renewal.
+#
+# It therefore stays installed permanently. Delete it, or close port 80, and
+# the certificate quietly stops renewing — with no visible symptom until it
+# expires 90 days later and every dashboard request starts failing at once.
+#
+# Scoped as tightly as an nginx vhost can be: it matches only {{DOMAIN}} by
+# server_name, so the customer's own :80 vhosts keep answering for their own
+# names, and it serves nothing but the challenge directory. Port 443 is not
+# mentioned anywhere here — that is the customer's RPC and is never touched.
+
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name {{DOMAIN}};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root         {{ACME_WEBROOT}};
+        default_type "text/plain";
+    }
+
+    location / {
+        return 404;
+    }
+}

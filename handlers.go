@@ -76,7 +76,7 @@ func (s *Server) Routes() http.Handler {
 	authed.HandleFunc("GET /api/v1/metrics/history", s.handleHistory)
 	mux.Handle("/api/v1/", withAuth(s.cfg.APIKey, authed))
 
-	return withCORS(mux)
+	return withCORS(s.cfg.AllowedOrigins, mux)
 }
 
 type healthResponse struct {

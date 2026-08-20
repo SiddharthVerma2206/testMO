@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -71,6 +72,14 @@ func main() {
 func logStartup(cfg *AgentConfig, chain *ChainConfig, srv *Server) {
 	log.Printf("testmo-agent %s listening on %s", Version, cfg.Listen)
 	log.Printf("prometheus: %s", cfg.PrometheusURL)
+
+	// Worth a line at startup: a wrong or missing origin leaves no server-side
+	// trace at all — it surfaces only as a CORS error in someone's browser.
+	if len(cfg.AllowedOrigins) == 0 {
+		log.Print("cors: any origin (allowed_origins is unset)")
+	} else {
+		log.Printf("cors: %s", strings.Join(cfg.AllowedOrigins, ", "))
+	}
 
 	if chain == nil {
 		log.Printf("chain: no config loaded (%s) — serving system metrics only", cfg.ChainConfig)
