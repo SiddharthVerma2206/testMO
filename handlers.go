@@ -74,7 +74,7 @@ type Server struct {
 	prom   *Prometheus
 	prober *Prober
 
-	// chainMetrics is metric_map and optional_metrics pre-merged, since every
+	// chainMetrics is the chain config's metric_map, resolved once, since every
 	// request consults it.
 	chainMetrics map[string]string
 	started      time.Time

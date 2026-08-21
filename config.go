@@ -45,7 +45,16 @@ type ChainConfig struct {
 	// testMO standard name -> PromQL. The only place testMO_* names are
 	// defined, whether the value originates from the client's own exporter
 	// or from a probe_* gauge this agent publishes.
-	MetricMap       map[string]string `yaml:"metric_map"`
+	MetricMap map[string]string `yaml:"metric_map"`
+
+	// OptionalMetrics was a second metric_map. It was merged with the first
+	// and treated identically, so the split bought nothing but a decision to
+	// make on every new metric.
+	//
+	// The field survives only so validate can reject a config that still uses
+	// it. yaml.Unmarshal ignores unknown keys, so deleting it outright would
+	// drop those metrics silently — no error, no log line, just names missing
+	// from the dashboard.
 	OptionalMetrics map[string]string `yaml:"optional_metrics"`
 }
 
@@ -235,28 +244,25 @@ func (c *ChainConfig) validate() error {
 			return fmt.Errorf("metric_map[%s]: empty PromQL", name)
 		}
 	}
-	for name, promql := range c.OptionalMetrics {
-		if promql == "" {
-			return fmt.Errorf("optional_metrics[%s]: empty PromQL", name)
+	if len(c.OptionalMetrics) > 0 {
+		names := make([]string, 0, len(c.OptionalMetrics))
+		for name := range c.OptionalMetrics {
+			names = append(names, name)
 		}
-		if _, dup := c.MetricMap[name]; dup {
-			return fmt.Errorf("optional_metrics[%s]: already defined in metric_map", name)
-		}
+		sort.Strings(names)
+		return fmt.Errorf("optional_metrics is no longer supported, move these into metric_map: %s",
+			strings.Join(names, ", "))
 	}
 	return nil
 }
 
-// Metrics returns every testMO name the chain exposes, required and optional
-// merged. Safe on a nil config.
+// Metrics returns every testMO name the chain exposes. Safe on a nil config.
 func (c *ChainConfig) Metrics() map[string]string {
 	if c == nil {
 		return nil
 	}
-	out := make(map[string]string, len(c.MetricMap)+len(c.OptionalMetrics))
+	out := make(map[string]string, len(c.MetricMap))
 	for k, v := range c.MetricMap {
-		out[k] = v
-	}
-	for k, v := range c.OptionalMetrics {
 		out[k] = v
 	}
 	return out

@@ -1,103 +1,210 @@
-# Copy this file to <chain>.yaml and fill it in for a new chain.
+# =============================================================================
+# testMO chain config template
 #
-# Two ways to get a number out of a node, mix freely:
-#   1. The client exposes Prometheus itself  -> set metrics_port/metrics_path,
-#      then reference its metric names directly in metric_map.
-#   2. It doesn't (or lacks the metric)      -> add a local_call that queries
-#      the RPC, then reference that gauge by name in metric_map.
+# Copy to <chain>.yaml, fill in, then:
+#   sudo cp <chain>.yaml /etc/testmo/chains/
+#   sudo systemctl restart testmo-agent
+# No rebuild is needed — this file is read at startup and validated there, so
+# a mistake shows up immediately in `journalctl -u testmo-agent`.
+#
+# Two sources of numbers, mix freely:
+#   A. the client's own Prometheus endpoint  -> metrics_port + metrics_path
+#   B. the node's RPC, polled by this agent  -> local_calls
+# Either way, metric_map is what names the result.
+#
+# Working examples to crib from: geth.yaml (JSON-RPC + hex), cosmos.yaml
+# (HTTP GET + dot-paths), solana.yaml (string matching + optional probes).
+# =============================================================================
 
-chain_type: ""        # e.g. "ethereum-reth", "bitcoin-core"
-client_name: ""       # e.g. "reth", "bitcoind"
 
-# --- Native Prometheus endpoint. Omit both if the client has none. ---
+# --- Identity ----------------------------------------------------------------
+# Free-form labels, reported by GET /api/v1/info. Nothing branches on them.
+#
+#   chain_type: "ethereum-reth"    client_name: "reth"
+#   chain_type: "bitcoin"          client_name: "bitcoind"
+
+chain_type: ""
+client_name: ""
+
+
+# --- A. The client's own Prometheus endpoint ---------------------------------
+# Omit both lines if the client has none.
+#
+# Setting these tells setup.sh to add an 'rpc_client' Prometheus scrape job.
+# It does NOT create any testMO_* metric — you still have to reference the
+# client's metric names in metric_map below, e.g.
+#
+#   metrics_port: 6060
+#   metrics_path: "/debug/metrics/prometheus"
+#   metric_map:
+#     testMO_block_height: "chain_head_header"
+#
+# Get the real names off a running node before using them:
+#   curl -s localhost:<port><path> | grep -E '^# TYPE'
+
 # metrics_port: 0
 # metrics_path: "/metrics"
 
-# --- Direct RPC probing. Omit this whole section if not needed. ---
+
+# --- B. RPC probing ----------------------------------------------------------
+# Omit this whole section, and local_calls, if you only use the endpoint above.
+#
+#   url       required when local_calls is non-empty
+#   timeout   default 5s. Keep it under interval — one polling goroutine runs
+#             all calls, so a call that outlives the interval delays the next.
+#   interval  default 15s. Match the Prometheus scrape interval (5s, set in
+#             install/prometheus.yml.tmpl). Poll slower and Prometheus records
+#             the same value twice; poll faster and it discards the extras.
+
 # rpc:
 #   url: "http://127.0.0.1:8545"
-#   timeout: "3s"        # default 5s; keep it under interval
-#   interval: "5s"       # default 15s. Match the Prometheus scrape interval:
-#                        # poll slower and Prometheus records the same value
-#                        # twice, poll faster and it discards the extras.
-#   basic_auth:          # bitcoind and friends
+#   timeout: "3s"
+#   interval: "5s"
+#
+#   # bitcoind and friends
+#   basic_auth:
 #     user: ""
 #     password: ""
 
+
+# --- local_calls -------------------------------------------------------------
 # Each entry publishes one Prometheus gauge named `name`.
 #
-#   type:     jsonrpc (default) POSTs {"method": ..., "params": ...} to rpc.url
-#             http_get          GETs rpc.url + method
-#   path:     dot-path into the response, numeric segments index arrays.
-#             Relative to "result" for jsonrpc, to the whole body for http_get.
-#             Omit to use the value as-is.
-#   type:     number  JSON number, or a quoted one ("12345")
-#             hex     "0x4a817c800" -> 20000000000
-#             bool    false/null -> 0, anything else -> 1
-#             count   length of a JSON array
-#             match   string lookup in `values`, falling back to `default`
-#   optional: true when the call is EXPECTED to fail in some node state, which
-#             silences its failure log. Everything else is unchanged: the gauge
-#             still drops and probe_call_up still goes to 0.
-#             Use it for eth_syncing's highestBlock (gone once synced) and
-#             Solana's getHealth (errors when behind) — without it a healthy
-#             node writes a failure line every 5s and buries the real ones.
+#   name      the gauge name. Must be unique. Prefix probe_ by convention.
+#   type      jsonrpc (default) — POSTs {"method":…,"params":…} to rpc.url
+#             http_get          — GETs rpc.url + method
+#   method    the JSON-RPC method, or the URL path for http_get
+#   params    JSON-RPC params array. Omit for none.
+#   extract   how to turn the response into one float — see below
+#   optional  see below
 #
-# Two gauges are published automatically for every call, no config needed:
-#   probe_call_duration_ms{call="<name>"}   round-trip time
+# extract.path: dot-path into the response, numeric segments index arrays
+# ("sync_info.latest_block_height", "0.slot"). Relative to "result" for
+# jsonrpc, to the whole body for http_get. Omit to use the value as-is.
+#
+# extract.type, with what each accepts:
+#
+#   number   JSON number, or a quoted one       12345  |  "12345"   -> 12345
+#   hex      0x-prefixed string                 "0x4a817c800"  -> 20000000000
+#   bool     false/null -> 0, anything else -> 1
+#   count    length of a JSON array             [a,b,c] -> 3
+#   match    string lookup in `values`, falling back to `default`
+#
+# Two gauges are published for every call automatically, no config needed:
+#   probe_call_duration_ms{call="<name>"}   round-trip time in ms
 #   probe_call_up{call="<name>"}            1 ok, 0 failed
 #
-# A call that fails drops its gauge entirely rather than going stale, so the
-# metric reads as "no data" rather than a wrong-but-plausible last value.
+# A call that fails drops its own gauge entirely rather than going stale, so
+# the metric reads as "no data" instead of a wrong-but-plausible last value.
 #
-# Pick ONE cheap call that succeeds whenever RPC is alive — regardless of sync
-# state — and hang rpc_up, latency and flaps off it. A call that fails when the
-# node is merely behind would report a healthy-but-catching-up node as down.
-#
+# optional: true marks a call EXPECTED to fail in some node state, and only
+# silences its failure log — the gauge still drops, probe_call_up still goes
+# to 0. Use it for eth_syncing's highestBlock (gone once synced) and Solana's
+# getHealth (errors when behind); without it a healthy node writes a failure
+# line every 5s and buries the real ones.
+
 # local_calls:
+#   # jsonrpc + bool. Cheap, succeeds in every sync state — good rpc_up basis.
 #   - name: "probe_syncing"
 #     method: "eth_syncing"
 #     params: []
 #     extract: {type: "bool"}
+#
+#   # jsonrpc + hex.
+#   - name: "probe_block_height"
+#     method: "eth_blockNumber"
+#     extract: {type: "hex"}
+#
+#   # jsonrpc + params + a dot-path into the result object.
+#   - name: "probe_block_size"
+#     method: "eth_getBlockByNumber"
+#     params: ["latest", false]
+#     extract: {path: "size", type: "hex"}
+#
+#   # http_get + dot-path. `method` is a URL path; the path walks the whole
+#   # body, including the response's own "result" envelope.
+#   - name: "probe_peers"
+#     type: "http_get"
+#     method: "/net_info"
+#     extract: {path: "result.n_peers", type: "number"}
+#
+#   # count — the value is an array, and its length is the metric.
+#   - name: "probe_cluster_nodes"
+#     method: "getClusterNodes"
+#     extract: {type: "count"}
+#
+#   # match — map strings to numbers. Anything unlisted becomes `default`;
+#   # omit default and an unlisted string fails the probe instead.
+#   - name: "probe_health"
+#     method: "getHealth"
+#     optional: true
+#     extract:
+#       type: "match"
+#       values: {"ok": 0}
+#       default: 1
 
-# --- testMO name -> PromQL. -------------------------------------------------
+
+# --- metric_map --------------------------------------------------------------
+# testMO name -> PromQL. This is the only place testMO_* names are defined,
+# whether the value comes from the client's exporter or a probe_* gauge, and
+# the only block you need — everything goes here.
 #
-# Nothing is mandatory. The agent serves whatever these two blocks define and
-# the dashboard renders whatever the agent returns — a name absent from both
-# simply doesn't exist for this chain, and the dashboard won't show a slot for
-# it. The split between the two blocks is organisational only; config.go
-# merges them and treats them identically.
+# Nothing is mandatory. The agent serves whatever this block defines and the
+# dashboard renders whatever the agent returns — a name that is absent simply
+# does not exist for this chain, and no empty slot appears. The names below
+# are the shared convention across chains, not a contract; add your own freely.
 #
-# Values are PromQL, so they can reference native client metrics, probe_*
-# gauges, or expressions combining them.
+# Values are PromQL against the local Prometheus, so they can reference native
+# client metrics, probe_* gauges, or expressions over either. Quote with
+# single quotes when the expression contains a {label="selector"}.
+#
+# Sanity-check an expression before committing to it:
+#   curl -sG localhost:9090/api/v1/query --data-urlencode 'query=<expr>'
 
 metric_map:
+  # Is RPC answering at all — the one whose absence makes everything else
+  # stale. Hang this, latency and flaps off ONE cheap call that succeeds
+  # whenever RPC is alive regardless of sync state. A call that fails when the
+  # node is merely behind reports a healthy-but-catching-up node as down.
   testMO_rpc_up: ""             # probe_call_up{call="<the cheap call>"}
+
   testMO_syncing: ""            # 0 = synced, 1 = syncing
   testMO_block_height: ""       # current block/height
   testMO_peers: ""              # connected peer count
 
   # Is the chain advancing. Catches a node frozen at one block that still has
-  # peers and reports synced. deriv(), not rate() — these are gauges, and
-  # rate() would read a reorg as a counter reset and spike.
+  # peers and reports synced — every other metric looks fine in that state.
+  # deriv(), not rate(): these are gauges, and rate() reads a reorg as a
+  # counter reset and spikes.
   # testMO_blocks_per_minute: "deriv(probe_block_height[5m]) * 60"
 
-  # Latency is measured agent -> loopback, so it is the node's own RPC
-  # responsiveness, not what a customer sees over the internet.
+  # Measured agent -> loopback, so this is the node's own RPC responsiveness,
+  # NOT what a customer sees — no network path, no TLS, no nginx in it.
   # testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
-  #
+
   # 30m at a 5s scrape is ~360 samples: p50/p95 are solid, p99 is roughly the
-  # 4th worst reading, so treat it as "worst case lately". A 5m window would
-  # be 60 samples, where p99 is just the max and jumps every refresh.
+  # 4th worst reading, so read it as "worst case lately". A 5m window is 60
+  # samples, where p99 is just the max and jumps on every refresh. Widen to
+  # [1h] if p99 still looks jumpy.
   # testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   # testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   # testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
 
-  # Proxy for "the node restarted" — a clean restart shows as 2 (down, up).
+  # Proxy for "the node restarted", not a restart counter — a clean restart
+  # shows as 2 (down, then up). Steady state is 0.
   # testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'
 
-optional_metrics:
   # Sync progress, where the chain exposes a target to measure against. Both
   # go null once synced, which is the same thing testMO_syncing: 0 says.
+  # Cosmos and Solana have no such target — a climbing height is all you get.
   # testMO_sync_target_block: "probe_sync_target"
   # testMO_sync_progress_pct: "100 * probe_block_height / probe_sync_target"
+
+  # Static identifiers, if worth answering "am I on mainnet or a testnet".
+  # testMO_chain_id: "probe_chain_id"
+  # testMO_network_id: "probe_network_id"
+
+  # An `or vector(N)` turns a probe's absence into a value. Use it when a
+  # failing probe *is* the signal — Solana's getHealth errors when behind, so
+  # probe_health disappears rather than reporting 1.
+  # testMO_syncing: "probe_health or vector(1)"

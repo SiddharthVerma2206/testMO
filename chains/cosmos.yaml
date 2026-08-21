@@ -1,24 +1,19 @@
 chain_type: "cosmos"
 client_name: "gaiad"
 
-# Tendermint/CometBFT can expose Prometheus on :26660, but only when
-# instrumentation.prometheus = true in config.toml. Left off by default so
-# setup.sh doesn't add a scrape job that permanently fails; uncomment if
-# you've enabled it.
+# CometBFT exposes Prometheus on :26660 only when instrumentation.prometheus
+# = true in config.toml. Uncomment if you have enabled it.
 # metrics_port: 26660
 # metrics_path: "/metrics"
 
 # Tendermint RPC is plain HTTP GET returning JSON, not JSON-RPC POST — hence
-# type: http_get, where `method` is a URL path and `path` walks the whole
-# response body (including its own "result" envelope).
+# type: http_get, where `method` is a URL path and `path` walks the whole body.
 rpc:
   url: "http://127.0.0.1:26657"
   timeout: "3s"
   interval: "5s"
 
 local_calls:
-  # /status answers whether the node is caught up or not, so this call is the
-  # basis for rpc_up and the latency metrics as well as the sync flag.
   - name: "probe_catching_up"
     type: "http_get"
     method: "/status"
@@ -35,36 +30,19 @@ local_calls:
     method: "/net_info"
     extract: {path: "result.n_peers", type: "number"}
 
-# --- testMO name -> PromQL. -------------------------------------------------
-#
-# Nothing here is mandatory. The agent serves whatever these two blocks
-# define and the dashboard renders whatever the agent returns.
-
 metric_map:
   testMO_rpc_up: 'probe_call_up{call="probe_catching_up"}'
-
   testMO_syncing: "probe_catching_up"
   testMO_block_height: "probe_block_height"
   testMO_peers: "probe_peers"
 
-  # Is the chain actually advancing — and the only sync-progress signal
-  # available here. Tendermint's /status reports the node's own height but no
-  # network tip to measure it against, so there is no progress percentage; a
-  # climbing height is what catching up looks like.
-  #
-  # deriv() rather than rate(): probe_block_height is a gauge.
+  # No network tip in /status, so there is no progress percentage — a climbing
+  # height is what catching up looks like here.
   testMO_blocks_per_minute: "deriv(probe_block_height[5m]) * 60"
 
-  # Agent -> 127.0.0.1:26657 on loopback. Not what a customer sees over the
-  # internet — no network path, no TLS, no nginx in this number.
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_catching_up"}'
-
-  # ~360 samples at a 5s scrape. p50/p95 are solid; read p99 as "worst case
-  # lately" rather than a rigorous 99th percentile. See geth.yaml for why 30m.
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_catching_up"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_catching_up"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_catching_up"}[30m])'
 
-  # Proxy for "the node restarted": each clean restart shows as 2 (down, then
-  # up). Steady state is 0.
   testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_catching_up"}[1h])'

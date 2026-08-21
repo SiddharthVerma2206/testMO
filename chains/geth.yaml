@@ -1,127 +1,51 @@
 chain_type: "ethereum-geth"
 client_name: "geth"
 
-# Geth needs --metrics --metrics.addr 127.0.0.1 --metrics.port 6060
-#
-# Declared so setup.sh scrapes it and the data is there, but nothing below
-# maps to it any more: every metric now comes from a probe, whose names are
-# verified by construction. Geth's own metric names (chain_head_header,
-# p2p_peers, txpool_pending) were guesses that had never been checked against
-# a live node — see the commented alternates further down.
+# Requires --metrics --metrics.addr 127.0.0.1 --metrics.port 6060.
+# Scraped by Prometheus as job 'rpc_client'; the geth_* / chain_* / rpc_* /
+# discover_* expressions at the bottom read it.
 metrics_port: 6060
 metrics_path: "/debug/metrics/prometheus"
 
 rpc:
   url: "http://127.0.0.1:8545"
-  # Keep interval equal to the Prometheus scrape interval. Poll slower and the
-  # same value gets recorded repeatedly; poll faster and the extra polls are
-  # discarded unscraped. The two tickers aren't phase-aligned, so expect the
-  # occasional duplicate — matching the rates is what bounds the drift.
-  #
-  # timeout stays under interval: pollAll runs on the ticker's own goroutine,
-  # so a call that outlives the interval delays the next poll.
   timeout: "3s"
   interval: "5s"
 
 local_calls:
-  # eth_syncing returns false once synced, an object while catching up.
-  # This is also the call the latency and uptime metrics are measured on, so
-  # it wants to be the cheapest one here.
   - name: "probe_syncing"
     method: "eth_syncing"
     params: []
     extract: {type: "bool"}
 
-  # The node's own head. Works identically whether syncing or synced, which is
-  # why sync progress reads from here rather than from eth_syncing's
-  # currentBlock — one number, one code path, no special case at the boundary.
-  - name: "probe_block_number"
-    method: "eth_blockNumber"
-    extract: {type: "hex"}
-
-  # The tip geth is catching up TO. Present only while syncing: once synced
-  # eth_syncing returns the bare value false, there is no highestBlock to walk
-  # to, and this call fails on every poll. That is the expected steady state
-  # of a healthy node, hence optional — see the note on it below.
-  - name: "probe_sync_target"
-    method: "eth_syncing"
-    params: []
-    optional: true
-    extract: {path: "highestBlock", type: "hex"}
-
-  - name: "probe_peer_count"
-    method: "net_peerCount"
-    extract: {type: "hex"}
-
-  # Static for the life of the node. Kept because "am I pointed at mainnet or
-  # a testnet" is worth answering, but polling a constant every 5s is waste —
-  # these belong in /api/v1/info once that endpoint caches (see TODO.txt).
   - name: "probe_network_id"
     method: "net_version"
-    extract: {type: "number"}      # returns a quoted decimal, not hex
+    extract: {type: "number"}
 
   - name: "probe_chain_id"
     method: "eth_chainId"
     extract: {type: "hex"}
 
-# --- testMO name -> PromQL. -------------------------------------------------
-#
-# Nothing here is mandatory. The agent serves whatever these two blocks
-# define and the dashboard renders whatever the agent returns; a name absent
-# from both simply doesn't exist for this chain. The split between the two is
-# organisational only — config.go merges them and treats them identically.
-
 metric_map:
-  # Is it answering at all. The first thing to look at, and the only one whose
-  # absence means every other number on the page is stale.
   testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'
-
   testMO_syncing: "probe_syncing"
-  testMO_block_height: "probe_block_number"
-  testMO_peers: "probe_peer_count"
+  testMO_peers: "p2p_peers"
+  testMO_block_height: "chain_head_block"
+  testMO_blocks_per_minute: "deriv(chain_head_block[5m]) * 60"
 
-  # Is the chain actually advancing. A node frozen at one block with healthy
-  # peers and syncing=false looks perfectly fine on every other metric; this
-  # is the one that catches it. deriv() rather than rate(): probe_block_number
-  # is a gauge, and rate() would read a reorg as a counter reset and spike.
-  testMO_blocks_per_minute: "deriv(probe_block_number[5m]) * 60"
-
-  # Latency of one eth_syncing call, measured agent -> 127.0.0.1:8545. This is
-  # the node's RPC responsiveness on loopback, NOT what a customer sees over
-  # the internet — no network path, no TLS, no nginx in this number.
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
-
-  # Percentiles over the stored samples: 30m at a 5s scrape is ~360 readings.
-  # p50 and p95 are solid at that count. p99 is the ~4th worst sample, so read
-  # it as "worst case lately" rather than a rigorous 99th percentile — a 5m
-  # window would be 60 samples, where p99 is just the max and jumps on every
-  # refresh. Widen to [1h] if p99 still looks jumpy in practice.
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
 
-  # How many times RPC went up or down in the last hour. A proxy for "the node
-  # restarted", not a restart counter: each clean restart shows as 2 (down,
-  # then up), and anything that interrupts RPC without restarting geth counts
-  # too. Steady state is 0 — any non-zero value is worth looking at.
-  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'
-
-optional_metrics:
-  # Sync progress. Both go null the moment the node is caught up, because
-  # probe_sync_target stops existing — absent here means "synced", which is
-  # the same thing testMO_syncing: 0 says.
-  testMO_sync_target_block: "probe_sync_target"
-  testMO_sync_progress_pct: "100 * probe_block_number / probe_sync_target"
-
   testMO_chain_id: "probe_chain_id"
   testMO_network_id: "probe_network_id"
 
-  # --- Geth's native exporter, if you'd rather read these from :6060. -------
-  # UNVERIFIED — these names were never checked against a live node. Confirm
-  # with the command below before trusting them, then swap them in above. No
-  # rebuild needed, only `systemctl restart testmo-agent`.
-  #
-  #   curl -s localhost:6060/debug/metrics/prometheus | grep -E '^# TYPE' | sort
-  #
-  # testMO_block_height: "chain_head_header"
-  # testMO_peers: "p2p_peers"
+  testMO_metrics_up: 'up{job="rpc_client"}'
+
+  testMO_rpc_requests_per_min: "rate(rpc_requests[5m]) * 60"
+  testMO_rpc_success_pct: "100 * rate(rpc_success[5m]) / rate(rpc_requests[5m])"
+
+  testMO_discover_ingress_bps: "rate(discover_ingress[5m])"
+  testMO_discover_egress_bps: "rate(discover_egress[5m])"
+  testMO_rpc_failures_per_min: "rate(rpc_failure[5m]) * 60"
