@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +47,17 @@ var systemMetrics = map[string]string{
 	// in a window (_1m, _1h) — those name the lookback, not the unit.
 	"testMO_load_1m": `node_load1`,
 
+	// Unix timestamp of the last boot, not seconds-since-boot, because it is a
+	// constant: the dashboard renders "up 12d 4h" from it client-side, and in
+	// /metrics/history it charts as a flat line whose only movement is a
+	// reboot. An uptime counter would climb on every sample and bury that.
+	//
+	// It answers "was this box rebooted", not "did the node process restart" —
+	// a node can crash and respawn a hundred times without this moving. That
+	// distinction is why the earlier testMO_uptime was dropped; keep it in
+	// mind before hanging an alert off this.
+	"testMO_boot_time_unixtime": `node_boot_time_seconds`,
+
 	// Bits per second, which is how a NIC is rated and how every other server
 	// tool reports throughput — node_exporter counts bytes, hence the *8.
 	//
@@ -54,29 +69,43 @@ var systemMetrics = map[string]string{
 	// burst roughly tenfold, which hid exactly the spikes worth seeing.
 	"testMO_network_rx_bps": `sum(irate(node_network_receive_bytes_total{` + physicalNIC + `}[1m])) * 8`,
 	"testMO_network_tx_bps": `sum(irate(node_network_transmit_bytes_total{` + physicalNIC + `}[1m])) * 8`,
-
-	// Days until / runs out, at the rate it has been filling over the last 6h.
-	//
-	// A chain node's disk grows monotonically and predictably, so this is
-	// forecastable in a way CPU and memory are not — and disk exhaustion is
-	// the single most common way one of these boxes dies. "83% full" does not
-	// say whether that is a problem; "6 days left" does.
-	//
-	// deriv() is the gauge-appropriate slope (least-squares over the window,
-	// no counter-reset correction). It is negative while filling, so min()
-	// picks the fastest-filling device and the leading minus makes it
-	// positive. clamp_min keeps a flat or shrinking disk from dividing by
-	// zero, and clamp_max pins the result at 999 = "not filling, don't care".
-	//
-	// Needs a couple of hours of history to mean anything; on a fresh install
-	// it reads as noise until the window fills.
-	"testMO_disk_time_to_full_days": `clamp_max(max(node_filesystem_avail_bytes{` + rootFS + `}) / clamp_min(-min(deriv(node_filesystem_avail_bytes{` + rootFS + `}[6h])), 1) / 86400, 999)`,
 }
 
 // maxHistoryPoints matches Prometheus' own ceiling on a range query, so an
 // absurd start/end/step combination fails here with a clear message instead
 // of as an opaque upstream error.
 const maxHistoryPoints = 11000
+
+// historyRanges are the lookback windows /metrics/history accepts as ?range=.
+//
+// An allowlist rather than a free parse of the string, for two reasons:
+// time.ParseDuration has no "d" unit, so "3d" is a parse error rather than
+// three days; and the set doubles as the menu the dashboard offers and the
+// list an error message can name.
+var historyRanges = map[string]time.Duration{
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"24h": 24 * time.Hour,
+	"3d":  3 * 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+}
+
+const defaultHistoryRange = "24h"
+
+// historyTargetPoints is how finely a range is sliced when the caller doesn't
+// name a step. Enough to draw a chart, and far short of shipping a week of
+// 5-second samples that no chart can plot.
+const historyTargetPoints = 400
+
+// minHistoryStep matches scrape_interval in install/prometheus.yml.tmpl. A
+// finer step only interpolates between samples that were never taken.
+const minHistoryStep = 5 * time.Second
+
+// maxHistoryRange mirrors RETENTION in install/setup.sh. Past it the TSDB
+// holds nothing, and without this check the reply would be a silently
+// truncated series rather than an error. Move the two together.
+const maxHistoryRange = 30 * 24 * time.Hour
 
 type Server struct {
 	cfg    *AgentConfig
@@ -243,74 +272,171 @@ type historyResponse struct {
 	Values []DataPoint `json:"values"`
 }
 
+// handleHistory answers in one of two shapes. With ?metric= it returns that
+// single series. Without, it returns every system and chain series at once,
+// under the same system/chain envelope /api/v1/metrics uses — so a dashboard
+// fills all its charts in one call instead of one request per metric.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	name := q.Get("metric")
-	if name == "" {
-		writeError(w, http.StatusBadRequest, "metric parameter is required")
+	start, end, step, err := historyWindow(q)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	promql, known := s.lookup(name)
-	if !known {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown metric %q", name))
+
+	if name := q.Get("metric"); name != "" {
+		promql, known := s.lookup(name)
+		if !known {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown metric %q", name))
+			return
+		}
+		values, err := s.prom.QueryRange(promql, start, end, step)
+		if err != nil {
+			log.Printf("history %s: %v", name, err)
+			writeError(w, http.StatusBadGateway, "prometheus query failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, historyResponse{
+			Metric: name,
+			Start:  start.Unix(),
+			End:    end.Unix(),
+			Step:   int64(step.Seconds()),
+			Values: values,
+		})
 		return
+	}
+
+	var system, chain map[string][]DataPoint
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); system = s.metricSeries(systemMetrics, start, end, step) }()
+	go func() { defer wg.Done(); chain = s.metricSeries(s.chainMetrics, start, end, step) }()
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"start":  start.Unix(),
+		"end":    end.Unix(),
+		"step":   int64(step.Seconds()),
+		"system": system,
+		"chain":  chain,
+	})
+}
+
+// historyWindow resolves the span and resolution from the query string.
+//
+// ?range= is the shortcut: one of the presets, ending now. ?start=/?end= are
+// the escape hatch for a custom span and override the preset where they
+// overlap. ?step= is derived from the resulting span unless the caller names
+// one, so a 24h and a 7d request both come back at a size worth charting
+// instead of the 7d one being seven times heavier.
+func historyWindow(q url.Values) (time.Time, time.Time, time.Duration, error) {
+	var zero time.Time
+
+	name := q.Get("range")
+	if name == "" {
+		name = defaultHistoryRange
+	}
+	window, ok := historyRanges[name]
+	if !ok {
+		return zero, zero, 0, fmt.Errorf("unknown range %q, want one of %s", name, historyRangeNames())
 	}
 
 	end := time.Now()
-	start := end.Add(-time.Hour)
-	step := time.Minute
-
-	if v := q.Get("start"); v != "" {
-		ts, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "start must be a unix timestamp")
-			return
-		}
-		start = time.Unix(ts, 0)
-	}
+	// end alone shifts the window back while keeping its width, so
+	// ?range=24h&end=<yesterday> reads as "the 24h ending yesterday".
 	if v := q.Get("end"); v != "" {
 		ts, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "end must be a unix timestamp")
-			return
+			return zero, zero, 0, errors.New("end must be a unix timestamp")
 		}
 		end = time.Unix(ts, 0)
 	}
-	if v := q.Get("step"); v != "" {
-		secs, err := strconv.Atoi(v)
-		if err != nil || secs <= 0 {
-			writeError(w, http.StatusBadRequest, "step must be a positive number of seconds")
-			return
+	start := end.Add(-window)
+	if v := q.Get("start"); v != "" {
+		ts, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return zero, zero, 0, errors.New("start must be a unix timestamp")
 		}
-		step = time.Duration(secs) * time.Second
+		start = time.Unix(ts, 0)
 	}
 
 	if !end.After(start) {
-		writeError(w, http.StatusBadRequest, "end must be after start")
-		return
+		return zero, zero, 0, errors.New("end must be after start")
 	}
-	if points := end.Sub(start) / step; points > maxHistoryPoints {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf(
+	span := end.Sub(start)
+	if span > maxHistoryRange {
+		return zero, zero, 0, fmt.Errorf(
+			"range spans %s, but Prometheus only retains %s",
+			span.Round(time.Hour), maxHistoryRange)
+	}
+
+	step := stepFor(span)
+	if v := q.Get("step"); v != "" {
+		secs, err := strconv.Atoi(v)
+		if err != nil || secs <= 0 {
+			return zero, zero, 0, errors.New("step must be a positive number of seconds")
+		}
+		step = time.Duration(secs) * time.Second
+	}
+	if points := span / step; points > maxHistoryPoints {
+		return zero, zero, 0, fmt.Errorf(
 			"range would return %d points, maximum is %d — widen step or narrow the range",
-			points, maxHistoryPoints))
-		return
+			points, maxHistoryPoints)
 	}
+	return start, end, step, nil
+}
 
-	values, err := s.prom.QueryRange(promql, start, end, step)
-	if err != nil {
-		log.Printf("history %s: %v", name, err)
-		writeError(w, http.StatusBadGateway, "prometheus query failed")
-		return
+// stepFor slices a span into roughly historyTargetPoints samples, rounded to
+// whole seconds and never finer than the scrape interval.
+func stepFor(span time.Duration) time.Duration {
+	step := (span / historyTargetPoints).Round(time.Second)
+	if step < minHistoryStep {
+		return minHistoryStep
 	}
+	return step
+}
 
-	writeJSON(w, http.StatusOK, historyResponse{
-		Metric: name,
-		Start:  start.Unix(),
-		End:    end.Unix(),
-		Step:   int64(step.Seconds()),
-		Values: values,
-	})
+// historyRangeNames lists the presets shortest first, for the error message a
+// caller sees after guessing a window that doesn't exist.
+func historyRangeNames() string {
+	names := make([]string, 0, len(historyRanges))
+	for n := range historyRanges {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return historyRanges[names[i]] < historyRanges[names[j]] })
+	return strings.Join(names, ", ")
+}
+
+// metricSeries is metricValues over a time range: the same name->PromQL map,
+// the same guarantee that every requested key appears in the result.
+//
+// Where metricValues reports an unreadable metric as null, a series reports it
+// as an empty array — the distinction it needs to make is "no samples in this
+// window", which is a real answer and charts as a gap, not as a missing key.
+func (s *Server) metricSeries(queries map[string]string, start, end time.Time, step time.Duration) map[string][]DataPoint {
+	out := make(map[string][]DataPoint, len(queries))
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, promql := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			values, err := s.prom.QueryRange(promql, start, end, step)
+			if err != nil {
+				log.Printf("history %s: %v", name, err)
+				values = []DataPoint{}
+			}
+
+			mu.Lock()
+			out[name] = values
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 // handleExposition publishes the prober's gauges for Prometheus to scrape.

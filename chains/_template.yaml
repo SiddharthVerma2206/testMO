@@ -100,6 +100,7 @@ local_calls:
 #   _per_min     events per minute                     20.1 /min
 #   _per_sec     events per second                     4.4 /s
 #   _days        days                                  12.4 days
+#   _unixtime    unix timestamp, seconds                24 Aug, up 12d 4h
 #   _total       cumulative count since process start  1,310
 #   _up          0 or 1                                badge
 #   _syncing     0 or 1                                badge
@@ -131,6 +132,15 @@ metric_map:
   testMO_peers: ''              # connected peer count
   testMO_blocks_per_min: ''     # deriv(<height>[5m]) * 60
 
+  # testMO_txpool_pending: "txpool_pending"
+  # testMO_txpool_queued: "txpool_queued"
+  # testMO_txpool_slots: "txpool_slots"
+  # testMO_txpool_invalid: "txpool_invalid"
+  # testMO_txpool_overflowed: "txpool_overflowed"
+
+  # Block insertion time as geth measures it. Nanoseconds at the source.
+  # testMO_block_insert_p95_ms: 'chain_inserts{quantile="0.95"} / 1e6'
+  # testMO_: ""
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
 
