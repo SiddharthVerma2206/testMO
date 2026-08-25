@@ -30,8 +30,9 @@ metric_map:
   testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'
   testMO_syncing: "probe_syncing"
   testMO_peers: "p2p_peers"
-  testMO_block_height: "chain_head_block"
-  testMO_blocks_per_minute: "deriv(chain_head_block[5m]) * 60"
+  testMO_latest_block: "chain_head_block"
+  testMO_latest_header: "chain_head_header"
+  testMO_chain_inserts: "chain_inserts"
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
@@ -40,12 +41,3 @@ metric_map:
 
   testMO_chain_id: "probe_chain_id"
   testMO_network_id: "probe_network_id"
-
-  testMO_metrics_up: 'up{job="rpc_client"}'
-
-  testMO_rpc_requests_per_min: "rate(rpc_requests[5m]) * 60"
-  testMO_rpc_success_pct: "100 * rate(rpc_success[5m]) / rate(rpc_requests[5m])"
-
-  testMO_discover_ingress_bps: "rate(discover_ingress[5m])"
-  testMO_discover_egress_bps: "rate(discover_egress[5m])"
-  testMO_rpc_failures_per_min: "rate(rpc_failure[5m]) * 60"

@@ -3,30 +3,29 @@
 #   B. the node's RPC, polled by this agent  -> local_calls
 # Either way, metric_map is what names the result.
 
-
 # --- Identity ----------------------------------------------------------------
 # Free-form labels, reported by GET /api/v1/info. Nothing branches on them.
 #
 #   chain_type: "ethereum-reth"    client_name: "reth"
 #   chain_type: "bitcoin"          client_name: "bitcoind"
 
-chain_type: ""
-client_name: ""
+chain_type: "bsc-geth"
+client_name: "geth"
 
 
 # --- A. The client's own Prometheus endpoint ---------------------------------
 
-#   metrics_port: 6060
-#   metrics_path: "/debug/metrics/prometheus"
+  metrics_port: 6060
+  metrics_path: "/debug/metrics/prometheus"
 
 # Get the real names off a running node before using them:
 #   curl -s localhost:<port><path> | grep -E '^# TYPE'
 
 # --- B. RPC probing ----------------------------------------------------------
-# rpc:
-#   url: "http://127.0.0.1:8545"
-#   timeout: "3s"
-#   interval: "5s"
+rpc:
+  url: "http://127.0.0.1:8545"
+  timeout: "3s"
+  interval: "5s"
 
 #   # bitcoind and friends
 #   basic_auth:
@@ -71,7 +70,10 @@ client_name: ""
 # line every 5s and buries the real ones.
 
 local_calls:
-
+  - name: "probe_syncing"
+    method: "eth_syncing"
+    params: []
+    extract: {type: "bool"}
 
 
 # --- metric_map --------------------------------------------------------------
@@ -92,15 +94,26 @@ local_calls:
 #   curl -sG localhost:9090/api/v1/query --data-urlencode 'query=<expr>'
 
 metric_map:
-  testMO_rpc_up: ''             # probe_call_up{call="<the cheap call>"}
+  testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'             # probe_call_up{call="<the cheap call>"}
 
-  testMO_syncing: ''            # 0 = synced, 1 = syncing
-  testMO_block_height: ''       # current block/height
-  testMO_peers: ''              # connected peer count
-
+  testMO_syncing: 'probe_syncing'            # 0 = synced, 1 = syncing
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
 
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
+
+  testMO_block_height: "chain_head_block"       # current block/height
+  testMO_chain_head_header: "chain_head_header"
+  testMO_chain_head_finalized: "chain_head_finalized"
+  testMO_chain_execution: "chain_execution"
+  testMO_p2p_peers_normal_latency: "p2p_peers_normal_latency"
+  testMO_system_cpu_procload: "system_cpu_procload"
+  testMO_system_cpu_sysload: "system_cpu_sysload"
+  testMO_system_memory_used: "system_memory_used"
+  testMO_peers: "p2p_peers"              # connected peer count
+  testMO_rpc_requests: "rpc_requests"
+  testMO_rpc_success: "rpc_success"
+  testMO_rpc_failure: "rpc_failure"
+  testMO_rpc_duration_all: "rpc_duration_all"
