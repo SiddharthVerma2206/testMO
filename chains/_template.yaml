@@ -1,9 +1,3 @@
-# Two sources of numbers, mix freely:
-#   A. the client's own Prometheus endpoint  -> metrics_port + metrics_path
-#   B. the node's RPC, polled by this agent  -> local_calls
-# Either way, metric_map is what names the result.
-
-
 # --- Identity ----------------------------------------------------------------
 # Free-form labels, reported by GET /api/v1/info. Nothing branches on them.
 #
@@ -15,11 +9,6 @@ client_name: ""
 
 
 # --- A. The client's own Prometheus endpoint ---------------------------------
-# Uncomment by deleting "# " — both keys must end up at column 0. setup.sh
-# reads them with an anchored `sed -n "s/^metrics_port:...//p"` to decide
-# whether to add the 'rpc_client' scrape job to prometheus.yml, so an indented
-# key is silently ignored: the agent loads fine, Prometheus never scrapes the
-# node, and every native metric serves null with nothing in any log.
 
 # metrics_port: 6060
 # metrics_path: "/debug/metrics/prometheus"
@@ -79,7 +68,6 @@ client_name: ""
 local_calls:
 
 
-
 # --- metric_map --------------------------------------------------------------
 # testMO name -> PromQL. This is the only place testMO_* names are defined,
 # whether the value comes from the client's exporter or a probe_* gauge, and
@@ -118,7 +106,7 @@ local_calls:
 #   (none)       dimensionless number                  118,005,668
 #
 # Anything else trailing the name is NOT a unit: _1m and _1h name a lookback
-# window (testMO_load_1m, testMO_rpc_flaps_1h) and render as plain numbers.
+# window (testMO_load_1m) and render as plain numbers.
 # _p50/_p95/_p99 name a quantile and sit BEFORE the unit — testMO_x_p95_ms.
 #
 # Convert to the canonical unit here, in the PromQL, never in the dashboard.
@@ -149,5 +137,3 @@ metric_map:
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
-
-  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'

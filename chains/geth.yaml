@@ -1,4 +1,4 @@
-chain_type: "ethereum-geth"
+chain_type: "any_chain-geth"
 client_name: "geth"
 
 # Requires --metrics --metrics.addr 127.0.0.1 --metrics.port 6060.
@@ -18,37 +18,30 @@ local_calls:
     params: []
     extract: {type: "bool"}
 
-  - name: "probe_network_id"
-    method: "net_version"
-    extract: {type: "number"}
-
   - name: "probe_chain_id"
     method: "eth_chainId"
     extract: {type: "hex"}
 
-# Every name ends in its unit — see the suffix table in _template.yaml. geth's
-# timers are nanoseconds and are exposed as Prometheus summaries, so they need
-# both a quantile selector and / 1e6 to land in milliseconds.
-
 metric_map:
   testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'
   testMO_syncing: "probe_syncing"
+  testMO_chain_id: "probe_chain_id"
 
   testMO_block_height: "chain_head_block"
-  testMO_chain_head_header: "chain_head_header"
   testMO_blocks_per_min: "deriv(chain_head_block[5m]) * 60"
 
   testMO_peers: "p2p_peers"
+  testMO_peer_latency_p95_ms: 'p2p_peers_normal_latency{quantile="0.95"}'
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
-  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'
+
+  testMO_rpc_requests_total: "rpc_requests"
+  testMO_rpc_success_total: "rpc_success"
+  testMO_rpc_failure_total: "rpc_failure"
+  testMO_rpc_success_pct: "100 * rpc_success / clamp_min(rpc_requests, 1)"
 
   # Block insertion time as geth measures it. Nanoseconds at the source.
   testMO_block_insert_p95_ms: 'chain_inserts{quantile="0.95"} / 1e6'
-
-  # Identifiers, not measurements — plain integers with no unit.
-  testMO_chain_id: "probe_chain_id"
-  testMO_network_id: "probe_network_id"

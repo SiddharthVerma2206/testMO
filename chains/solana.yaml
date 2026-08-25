@@ -44,5 +44,3 @@ metric_map:
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_block_height"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_block_height"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_block_height"}[30m])'
-
-  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_block_height"}[1h])'
