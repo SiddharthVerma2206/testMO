@@ -15,11 +15,17 @@ client_name: ""
 
 
 # --- A. The client's own Prometheus endpoint ---------------------------------
+# Uncomment by deleting "# " — both keys must end up at column 0. setup.sh
+# reads them with an anchored `sed -n "s/^metrics_port:...//p"` to decide
+# whether to add the 'rpc_client' scrape job to prometheus.yml, so an indented
+# key is silently ignored: the agent loads fine, Prometheus never scrapes the
+# node, and every native metric serves null with nothing in any log.
 
-#   metrics_port: 6060
-#   metrics_path: "/debug/metrics/prometheus"
+# metrics_port: 6060
+# metrics_path: "/debug/metrics/prometheus"
 
-# Get the real names off a running node before using them:
+# Get the real names AND types off a running node before using them — the type
+# decides whether the expression needs a quantile selector:
 #   curl -s localhost:<port><path> | grep -E '^# TYPE'
 
 # --- B. RPC probing ----------------------------------------------------------
@@ -91,12 +97,51 @@ local_calls:
 # Sanity-check an expression before committing to it:
 #   curl -sG localhost:9090/api/v1/query --data-urlencode 'query=<expr>'
 
+
+# --- UNITS: the name carries the unit -----------------------------------------
+# /api/v1/metrics returns bare JSON floats — no units, no metadata. The name
+# suffix is the ONLY thing that tells the dashboard how to render a number, so
+# a name without one is a number nobody can format.
+#
+#   suffix       unit                                  dashboard renders
+#   ---------    -----------------------------------   ------------------------
+#   _pct         percent, 0-100                        47.3 %
+#   _ms          milliseconds                          0.65 ms
+#   _bytes       bytes                                 3.18 GB
+#   _bps         bits per second                       4.2 Mbps
+#   _per_min     events per minute                     20.1 /min
+#   _per_sec     events per second                     4.4 /s
+#   _days        days                                  12.4 days
+#   _total       cumulative count since process start  1,310
+#   _up          0 or 1                                badge
+#   _syncing     0 or 1                                badge
+#   (none)       dimensionless number                  118,005,668
+#
+# Anything else trailing the name is NOT a unit: _1m and _1h name a lookback
+# window (testMO_load_1m, testMO_rpc_flaps_1h) and render as plain numbers.
+# _p50/_p95/_p99 name a quantile and sit BEFORE the unit — testMO_x_p95_ms.
+#
+# Convert to the canonical unit here, in the PromQL, never in the dashboard.
+# One place to be wrong, and /metrics/history then returns the same units as
+# /metrics. Two conversions worth knowing:
+#
+#   geth-family timers are NANOSECONDS       -> '<name>{quantile="0.95"} / 1e6'
+#   a Prometheus summary needs a quantile    -> a bare name matches {quantile=
+#     "0.5"}, "0.95", "0.99", _count and _sum at once, and resolves to nothing.
+#     `curl -s localhost:<port><path> | grep '^# TYPE <name> '` tells you which
+#     it is.
+#
+# Percentages: emit 0-100, not 0-1. clamp_min the denominator so an idle node
+# divides by zero into a real number rather than NaN, which serves as null:
+#   testMO_rpc_success_pct: "100 * rpc_success / clamp_min(rpc_requests, 1)"
+
 metric_map:
   testMO_rpc_up: ''             # probe_call_up{call="<the cheap call>"}
 
   testMO_syncing: ''            # 0 = synced, 1 = syncing
   testMO_block_height: ''       # current block/height
   testMO_peers: ''              # connected peer count
+  testMO_blocks_per_min: ''     # deriv(<height>[5m]) * 60
 
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
@@ -104,3 +149,5 @@ metric_map:
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
+
+  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'

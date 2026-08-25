@@ -38,7 +38,7 @@ metric_map:
 
   # No network tip in /status, so there is no progress percentage — a climbing
   # height is what catching up looks like here.
-  testMO_blocks_per_minute: "deriv(probe_block_height[5m]) * 60"
+  testMO_blocks_per_min: "deriv(probe_block_height[5m]) * 60"
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_catching_up"}'
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_catching_up"}[30m])'

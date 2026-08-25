@@ -1,73 +1,15 @@
-# Two sources of numbers, mix freely:
-#   A. the client's own Prometheus endpoint  -> metrics_port + metrics_path
-#   B. the node's RPC, polled by this agent  -> local_calls
-# Either way, metric_map is what names the result.
-
-# --- Identity ----------------------------------------------------------------
-# Free-form labels, reported by GET /api/v1/info. Nothing branches on them.
-#
-#   chain_type: "ethereum-reth"    client_name: "reth"
-#   chain_type: "bitcoin"          client_name: "bitcoind"
-
 chain_type: "bsc-geth"
 client_name: "geth"
 
+# BSC's client is a geth fork, so it exposes the same /debug/metrics/prometheus
+# endpoint. Needs --metrics on the node; the address defaults to 127.0.0.1:6060.
+metrics_port: 6060
+metrics_path: "/debug/metrics/prometheus"
 
-# --- A. The client's own Prometheus endpoint ---------------------------------
-
-  metrics_port: 6060
-  metrics_path: "/debug/metrics/prometheus"
-
-# Get the real names off a running node before using them:
-#   curl -s localhost:<port><path> | grep -E '^# TYPE'
-
-# --- B. RPC probing ----------------------------------------------------------
 rpc:
   url: "http://127.0.0.1:8545"
   timeout: "3s"
   interval: "5s"
-
-#   # bitcoind and friends
-#   basic_auth:
-#     user: ""
-#     password: ""
-
-
-# --- local_calls -------------------------------------------------------------
-# Each entry publishes one Prometheus gauge named `name`.
-#
-#   name      the gauge name. Must be unique. Prefix probe_ by convention.
-#   type      jsonrpc (default) — POSTs {"method":…,"params":…} to rpc.url
-#             http_get          — GETs rpc.url + method
-#   method    the JSON-RPC method, or the URL path for http_get
-#   params    JSON-RPC params array. Omit for none.
-#   extract   how to turn the response into one float — see below
-#   optional  see below
-
-# extract.path: dot-path into the response, numeric segments index arrays
-# ("sync_info.latest_block_height", "0.slot"). Relative to "result" for
-# jsonrpc, to the whole body for http_get. Omit to use the value as-is.
-#
-# extract.type, with what each accepts:
-#
-#   number   JSON number, or a quoted one       12345  |  "12345"   -> 12345
-#   hex      0x-prefixed string                 "0x4a817c800"  -> 20000000000
-#   bool     false/null -> 0, anything else -> 1
-#   count    length of a JSON array             [a,b,c] -> 3
-#   match    string lookup in `values`, falling back to `default`
-#
-# Two gauges are published for every call automatically, no config needed:
-#   probe_call_duration_ms{call="<name>"}   round-trip time in ms
-#   probe_call_up{call="<name>"}            1 ok, 0 failed
-#
-# A call that fails drops its own gauge entirely rather than going stale, so
-# the metric reads as "no data" instead of a wrong-but-plausible last value.
-#
-# optional: true marks a call EXPECTED to fail in some node state, and only
-# silences its failure log — the gauge still drops, probe_call_up still goes
-# to 0. Use it for eth_syncing's highestBlock (gone once synced) and Solana's
-# getHealth (errors when behind); without it a healthy node writes a failure
-# line every 5s and buries the real ones.
 
 local_calls:
   - name: "probe_syncing"
@@ -75,45 +17,66 @@ local_calls:
     params: []
     extract: {type: "bool"}
 
-
-# --- metric_map --------------------------------------------------------------
-# testMO name -> PromQL. This is the only place testMO_* names are defined,
-# whether the value comes from the client's exporter or a probe_* gauge, and
-# the only block you need — everything goes here.
+# --- metric_map ---------------------------------------------------------------
+# Every name ends in its unit — see the suffix table in _template.yaml. The API
+# returns bare floats, so the suffix is the only thing telling the dashboard
+# whether 3416861328 is bytes, milliseconds or a block number.
 #
-# Nothing is mandatory. The agent serves whatever this block defines and the
-# dashboard renders whatever the agent returns — a name that is absent simply
-# does not exist for this chain, and no empty slot appears. The names below
-# are the shared convention across chains, not a contract; add your own freely.
+# Convert to the canonical unit HERE, in the PromQL, not in the dashboard. geth
+# exposes its timers in nanoseconds, so anything read out of one is divided by
+# 1e6 below. Doing it here means every consumer agrees, and /metrics/history
+# returns the same units as /metrics.
 #
-# Values are PromQL against the local Prometheus, so they can reference native
-# client metrics, probe_* gauges, or expressions over either. Quote with
-# single quotes when the expression contains a {label="selector"}.
-#
-# Sanity-check an expression before committing to it:
-#   curl -sG localhost:9090/api/v1/query --data-urlencode 'query=<expr>'
+# Timers are Prometheus *summaries*: a bare `chain_execution` matches several
+# series at once ({quantile="0.5"}, "0.95", "0.99", plus _count and _sum) and
+# resolves to nothing. They always need a quantile selector.
 
 metric_map:
-  testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'             # probe_call_up{call="<the cheap call>"}
+  # --- Liveness. 0/1 flags, rendered as a badge, never as a number. ---
+  testMO_rpc_up: 'probe_call_up{call="probe_syncing"}'
+  testMO_syncing: "probe_syncing"
 
-  testMO_syncing: 'probe_syncing'            # 0 = synced, 1 = syncing
+  # --- Chain position. Plain integers, no unit. ---
+  testMO_block_height: "chain_head_block"
+  testMO_chain_head_header: "chain_head_header"
+  testMO_chain_head_finalized: "chain_head_finalized"
+  testMO_blocks_per_min: "deriv(chain_head_block[5m]) * 60"
 
+  # --- Peers. Plain integer. ---
+  testMO_peers: "p2p_peers"
+
+  # --- Agent -> node RPC latency, measured on loopback by the prober. ---
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
-
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
+  testMO_rpc_flaps_1h: 'changes(probe_call_up{call="probe_syncing"}[1h])'
 
-  testMO_block_height: "chain_head_block"       # current block/height
-  testMO_chain_head_header: "chain_head_header"
-  testMO_chain_head_finalized: "chain_head_finalized"
-  testMO_chain_execution: "chain_execution"
-  testMO_p2p_peers_normal_latency: "p2p_peers_normal_latency"
-  testMO_system_cpu_procload: "system_cpu_procload"
-  testMO_system_cpu_sysload: "system_cpu_sysload"
-  testMO_system_memory_used: "system_memory_used"
-  testMO_peers: "p2p_peers"              # connected peer count
-  testMO_rpc_requests: "rpc_requests"
-  testMO_rpc_success: "rpc_success"
-  testMO_rpc_failure: "rpc_failure"
-  testMO_rpc_duration_all: "rpc_duration_all"
+  # --- The node's own timers. Nanoseconds at the source, hence / 1e6. ---
+  testMO_block_execution_p95_ms: 'chain_execution{quantile="0.95"} / 1e6'
+  testMO_rpc_server_p95_ms: 'rpc_duration_all{quantile="0.95"} / 1e6'
+
+  # Peer round-trip as the node measures it, unlike testMO_rpc_latency_ms which
+  # is this agent talking to loopback. VERIFY THE SCALE before trusting it: if
+  # the number reads in the thousands it is microseconds and wants / 1e3, and
+  # if it is a gauge rather than a summary drop the quantile selector.
+  testMO_peer_latency_p95_ms: 'p2p_peers_normal_latency{quantile="0.95"}'
+
+  # --- RPC served by the node. Cumulative since the node started, so they only
+  # ever climb; a restart resets them to 0. _pct is the readable one. ---
+  testMO_rpc_requests_total: "rpc_requests"
+  testMO_rpc_success_total: "rpc_success"
+  testMO_rpc_failure_total: "rpc_failure"
+  testMO_rpc_success_pct: "100 * rpc_success / clamp_min(rpc_requests, 1)"
+
+  # --- The client process itself, as the client reports it. Distinct from the
+  # system block's testMO_cpu_usage_pct / testMO_memory_usage_pct, which
+  # node_exporter measures for the whole box. ---
+  #
+  # procload is percent of ONE core, so it exceeds 100 on a busy multi-core box
+  # — cap the gauge at `nproc * 100`, not at 100. Cross-check it against `top`
+  # once: if it reads ~100x smaller than the process's real CPU use, the source
+  # is a hundredths-of-a-percent integer and this wants `* 100`.
+  testMO_cpu_procload_pct: "system_cpu_procload"
+  testMO_cpu_sysload_pct: "system_cpu_sysload"
+  testMO_client_memory_bytes: "system_memory_used"

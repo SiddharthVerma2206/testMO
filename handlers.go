@@ -25,13 +25,23 @@ const physicalNIC = `device!~"lo|veth.*|docker.*|br-.*|virbr.*|tap.*|tun.*"`
 // than in a chain YAML. Each expression must reduce to exactly one series —
 // hence the sum()/max() wrappers, since a box can have several NICs and
 // several devices mounted at /.
+//
+// Every name carries its unit as a suffix — _pct, _bytes, _bps, _days — which
+// is the only thing telling the dashboard how to format the number. The API
+// returns bare floats, so a name without a unit is a number nobody can render.
+// See the suffix table in chains/_template.yaml; chain YAMLs follow the same
+// rule. Renaming one here is an API change: update the chain configs that
+// mirror it and the dashboard together.
 var systemMetrics = map[string]string{
-	"testMO_cpu_usage":    `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`,
-	"testMO_memory_usage": `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
-	"testMO_memory_total": `node_memory_MemTotal_bytes`,
-	"testMO_disk_usage":   `100 * (1 - max(node_filesystem_avail_bytes{` + rootFS + `}) / max(node_filesystem_size_bytes{` + rootFS + `}))`,
-	"testMO_disk_total":   `max(node_filesystem_size_bytes{` + rootFS + `})`,
-	"testMO_load_1m":      `node_load1`,
+	"testMO_cpu_usage_pct":      `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`,
+	"testMO_memory_usage_pct":   `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
+	"testMO_memory_total_bytes": `node_memory_MemTotal_bytes`,
+	"testMO_disk_usage_pct":     `100 * (1 - max(node_filesystem_avail_bytes{` + rootFS + `}) / max(node_filesystem_size_bytes{` + rootFS + `}))`,
+	"testMO_disk_total_bytes":   `max(node_filesystem_size_bytes{` + rootFS + `})`,
+
+	// No unit suffix: a load average is dimensionless. So is anything ending
+	// in a window (_1m, _1h) — those name the lookback, not the unit.
+	"testMO_load_1m": `node_load1`,
 
 	// Bits per second, which is how a NIC is rated and how every other server
 	// tool reports throughput — node_exporter counts bytes, hence the *8.
@@ -60,7 +70,7 @@ var systemMetrics = map[string]string{
 	//
 	// Needs a couple of hours of history to mean anything; on a fresh install
 	// it reads as noise until the window fills.
-	"testMO_disk_days_until_full": `clamp_max(max(node_filesystem_avail_bytes{` + rootFS + `}) / clamp_min(-min(deriv(node_filesystem_avail_bytes{` + rootFS + `}[6h])), 1) / 86400, 999)`,
+	"testMO_disk_time_to_full_days": `clamp_max(max(node_filesystem_avail_bytes{` + rootFS + `}) / clamp_min(-min(deriv(node_filesystem_avail_bytes{` + rootFS + `}[6h])), 1) / 86400, 999)`,
 }
 
 // maxHistoryPoints matches Prometheus' own ceiling on a range query, so an

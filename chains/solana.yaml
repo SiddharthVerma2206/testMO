@@ -38,7 +38,7 @@ metric_map:
   testMO_peers: "probe_peers"
 
   # No cluster-wide target slot exposed, so there is no progress percentage.
-  testMO_blocks_per_minute: "deriv(probe_block_height[5m]) * 60"
+  testMO_blocks_per_min: "deriv(probe_block_height[5m]) * 60"
 
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_block_height"}'
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_block_height"}[30m])'
