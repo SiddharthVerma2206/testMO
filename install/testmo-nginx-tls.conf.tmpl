@@ -14,9 +14,20 @@
 # adding a location to that block is the one change that could take their node
 # offline. The two never share a listener.
 #
-# The certificate is Let's Encrypt, renewed by certbot.timer against the :80
-# challenge vhost in testmo-acme.conf.tmpl, which is why that vhost and port 80
-# both have to stay in place after the install.
+# The certificate is Let's Encrypt, and {{CERT_NAME}} is the lineage under
+# /etc/letsencrypt/live that actually covers {{DOMAIN}} — usually the same
+# string, but not when the customer's certificate is multi-domain and filed
+# under its first -d. setup.sh resolves it by reading the SANs.
+#
+# Who renews it depends on who issued it. If setup.sh issued it, certbot.timer
+# renews against the :80 challenge vhost in testmo-acme.conf.tmpl, so that
+# vhost and port 80 both have to stay in place. If the certificate was already
+# there — the customer ran `certbot --nginx` for their own RPC on this name —
+# then it is theirs, renewal is already configured against their :80 block, and
+# setup.sh installs no challenge vhost at all. Two `server_name {{DOMAIN}}`
+# blocks on :80 is a warning rather than an error, and nginx silently keeps
+# only the one it loaded first; the loser is either their redirect or the
+# renewal, and neither failure announces itself.
 #
 # Everything below the ssl_* block is identical to testmo-nginx.conf on
 # purpose: diff the two and the only difference should be the TLS listener.
@@ -31,8 +42,8 @@ server {
 
     server_name {{DOMAIN}};
 
-    ssl_certificate     /etc/letsencrypt/live/{{DOMAIN}}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{{DOMAIN}}/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/{{CERT_NAME}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{CERT_NAME}}/privkey.pem;
 
     # Set explicitly: the distro default still enables TLSv1 and TLSv1.1 on
     # 22.04, which modern browsers refuse anyway.

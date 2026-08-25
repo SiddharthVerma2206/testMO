@@ -28,6 +28,11 @@ METRICS_PORT=""
 METRICS_PATH=""
 NODE_ID=""
 DOMAIN=""
+# The /etc/letsencrypt/live/ directory the TLS vhost reads its certificate
+# from. Resolved at run time, because it is not always $DOMAIN — see
+# cert_lineage_for_domain.
+CERT_NAME=""
+ISSUED_CERT=0
 LE_EMAIL=""
 ALLOW_ORIGINS=()
 RESTART_AGENT=0
@@ -123,8 +128,30 @@ ensure_user() {
 # Fills the {{...}} placeholders in one of the install/*.tmpl nginx files.
 render() {
 	sed -e "s|{{DOMAIN}}|$DOMAIN|g" \
+	    -e "s|{{CERT_NAME}}|$CERT_NAME|g" \
 	    -e "s|{{ACME_WEBROOT}}|$ACME_WEBROOT|g" \
 	    "$SCRIPT_DIR/$1"
+}
+
+# The certbot lineage whose certificate actually covers $DOMAIN, printed as its
+# directory name under /etc/letsencrypt/live. Empty exit 1 if nothing covers it.
+#
+# Usually the lineage is named for $DOMAIN, but certbot names it after the
+# FIRST -d only, so `certbot -d example.com -d node1.example.com` files a
+# certificate covering node1 under example.com/. Assuming live/$DOMAIN/ in that
+# case points the vhost at a path that does not exist: nginx refuses the config
+# and the reload that would have taken effect is the customer's RPC too.
+cert_lineage_for_domain() {
+	local d="${1//./\\.}" f
+	for f in /etc/letsencrypt/live/*/fullchain.pem; do
+		[[ -s "$f" ]] || continue
+		if openssl x509 -in "$f" -noout -text 2>/dev/null |
+			grep -qE "(^|[[:space:],])DNS:$d([[:space:],]|\$)"; then
+			basename "$(dirname "$f")"
+			return 0
+		fi
+	done
+	return 1
 }
 
 # Tests the config and reloads, or backs the whole of testMO out of nginx.
@@ -514,45 +541,62 @@ fi
 
 if [[ -n "$DOMAIN" ]]; then
 	# ------------------------------------------------------------------
-	step "Obtaining a certificate for $DOMAIN"
+	step "Certificate for $DOMAIN"
 
-	install -d -m 0755 "$ACME_WEBROOT"
-	if render testmo-acme.conf.tmpl | write_file /etc/nginx/sites-available/testmo-acme 0644; then
-		RELOAD_NGINX=1
-	fi
-	if link_site testmo-acme; then
-		RELOAD_NGINX=1
-	fi
-	if [[ $RELOAD_NGINX -eq 1 ]]; then
-		nginx_reload_or_revert
-		RELOAD_NGINX=0
-	fi
+	CERT_NAME="$(cert_lineage_for_domain "$DOMAIN" || true)"
 
-	# Port 80 has to be open for the challenge, now and at every renewal.
-	# Opened before certbot runs, or the first validation fails.
-	if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "^Status: active"; then
-		ufw allow 80/tcp >/dev/null
-		log "ufw: allowed 80/tcp (needed for issue and renewal)"
+	if [[ -n "$CERT_NAME" ]]; then
+		# A certificate for this name already exists, which on a shared node
+		# means the customer ran `certbot --nginx -d $DOMAIN` for their RPC
+		# vhost. That run also owns renewal for the name: it recorded
+		# authenticator=nginx against their own :80 block.
+		#
+		# So do not go near port 80. Adding the challenge vhost here would put
+		# a second `server_name $DOMAIN` on :80 alongside the redirect certbot
+		# wrote into their file. nginx does not reject that — it warns, keeps
+		# whichever block the sites-enabled glob loaded first, and ignores the
+		# other. Which one loses depends on whether their filename happens to
+		# sort before "testmo-acme". Lose the redirect and their http:// URLs
+		# stop working; lose the challenge and renewal breaks with no symptom
+		# until the certificate expires 90 days later and takes RPC and this
+		# API down together.
+		if [[ "$CERT_NAME" != "$DOMAIN" ]]; then
+			log "certificate covering $DOMAIN is filed under '$CERT_NAME'"
+		fi
+		log "certificate already present — leaving it and its renewal alone"
+
+		# An earlier run, from before this branch existed, may have left the
+		# challenge vhost enabled and the name collision in place.
+		if [[ -e /etc/nginx/sites-enabled/testmo-acme ]]; then
+			rm -f /etc/nginx/sites-enabled/testmo-acme
+			log "removed our :80 challenge vhost — this name is not ours to renew"
+			nginx_reload_or_revert
+		fi
 	else
-		log "ufw inactive — ensure 80/tcp is reachable, at install and at renewal"
-	fi
+		CERT_NAME="$DOMAIN"
+		ISSUED_CERT=1
 
-	# A renewed certificate is inert until nginx re-reads it. Without this the
-	# API keeps serving the old certificate and starts failing the day it
-	# expires, months after anyone touched this box. The hook goes in the
-	# global deploy directory rather than into this certificate's renewal
-	# config, so it survives the certificate being reissued by hand later.
-	install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
-	write_file /etc/letsencrypt/renewal-hooks/deploy/testmo-reload-nginx.sh 0755 <<'EOF' || true
-#!/bin/sh
-# Installed by testMO setup.sh. Reloads nginx after certbot renews, so the
-# fresh certificate is actually served.
-systemctl reload nginx
-EOF
+		install -d -m 0755 "$ACME_WEBROOT"
+		if render testmo-acme.conf.tmpl | write_file /etc/nginx/sites-available/testmo-acme 0644; then
+			RELOAD_NGINX=1
+		fi
+		if link_site testmo-acme; then
+			RELOAD_NGINX=1
+		fi
+		if [[ $RELOAD_NGINX -eq 1 ]]; then
+			nginx_reload_or_revert
+			RELOAD_NGINX=0
+		fi
 
-	if [[ -s "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
-		log "certificate already present, leaving it alone"
-	else
+		# Port 80 has to be open for the challenge, now and at every renewal.
+		# Opened before certbot runs, or the first validation fails.
+		if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "^Status: active"; then
+			ufw allow 80/tcp >/dev/null
+			log "ufw: allowed 80/tcp (needed for issue and renewal)"
+		else
+			log "ufw inactive — ensure 80/tcp is reachable, at install and at renewal"
+		fi
+
 		if [[ -n "$LE_EMAIL" ]]; then
 			EMAIL_ARGS=(--email "$LE_EMAIL")
 		else
@@ -572,6 +616,19 @@ EOF
 		fi
 		log "certificate issued"
 	fi
+
+	# A renewed certificate is inert until nginx re-reads it. Without this the
+	# API keeps serving the old certificate and starts failing the day it
+	# expires, months after anyone touched this box. The hook goes in the
+	# global deploy directory rather than into this certificate's renewal
+	# config, so it survives the certificate being reissued by hand later.
+	install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+	write_file /etc/letsencrypt/renewal-hooks/deploy/testmo-reload-nginx.sh 0755 <<'EOF' || true
+#!/bin/sh
+# Installed by testMO setup.sh. Reloads nginx after certbot renews, so the
+# fresh certificate is actually served.
+systemctl reload nginx
+EOF
 
 	systemctl enable --now certbot.timer >/dev/null 2>&1 ||
 		warn "could not enable certbot.timer — renewals will NOT run automatically"
@@ -648,13 +705,23 @@ cat <<EOF
  Logs: journalctl -u testmo-agent -f
 EOF
 
-if [[ -n "$DOMAIN" ]]; then
+if [[ -n "$DOMAIN" && $ISSUED_CERT -eq 1 ]]; then
 	cat <<EOF
 
- TLS is on. Renewal is certbot.timer's job and needs 80/tcp
- open from the internet permanently — close it and the cert
- expires in 90 days, taking the dashboard down with it.
+ TLS is on, using a certificate this installer issued. Renewal
+ is certbot.timer's job and needs 80/tcp open from the internet
+ permanently — close it and the cert expires in 90 days, taking
+ the dashboard down with it.
    certbot renew --dry-run     # verify renewal actually works
+EOF
+elif [[ -n "$DOMAIN" ]]; then
+	cat <<EOF
+
+ TLS is on, reusing the existing certificate at
+ /etc/letsencrypt/live/$CERT_NAME/. Renewal was already set up
+ by whoever issued it and this installer did not touch it, or
+ port 80, or any vhost but its own.
+   certbot renew --dry-run     # worth confirming anyway
 EOF
 else
 	cat <<EOF
