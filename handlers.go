@@ -37,26 +37,13 @@ const physicalNIC = `device!~"lo|veth.*|docker.*|br-.*|virbr.*|tap.*|tun.*"`
 // rule. Renaming one here is an API change: update the chain configs that
 // mirror it and the dashboard together.
 var systemMetrics = map[string]string{
-	"testMO_cpu_usage_pct":      `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`,
-	"testMO_memory_usage_pct":   `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
-	"testMO_memory_total_bytes": `node_memory_MemTotal_bytes`,
-	"testMO_disk_usage_pct":     `100 * (1 - max(node_filesystem_avail_bytes{` + rootFS + `}) / max(node_filesystem_size_bytes{` + rootFS + `}))`,
-	"testMO_disk_total_bytes":   `max(node_filesystem_size_bytes{` + rootFS + `})`,
+	"testMO_cpu_usage_pct":    `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`,
+	"testMO_memory_usage_pct": `100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)`,
+	"testMO_disk_usage_pct":   `100 * (1 - max(node_filesystem_avail_bytes{` + rootFS + `}) / max(node_filesystem_size_bytes{` + rootFS + `}))`,
 
 	// No unit suffix: a load average is dimensionless. So is anything ending
 	// in a window (_1m, _1h) — those name the lookback, not the unit.
 	"testMO_load_1m": `node_load1`,
-
-	// Unix timestamp of the last boot, not seconds-since-boot, because it is a
-	// constant: the dashboard renders "up 12d 4h" from it client-side, and in
-	// /metrics/history it charts as a flat line whose only movement is a
-	// reboot. An uptime counter would climb on every sample and bury that.
-	//
-	// It answers "was this box rebooted", not "did the node process restart" —
-	// a node can crash and respawn a hundred times without this moving. That
-	// distinction is why the earlier testMO_uptime was dropped; keep it in
-	// mind before hanging an alert off this.
-	"testMO_boot_time_unixtime": `node_boot_time_seconds`,
 
 	// Bits per second, which is how a NIC is rated and how every other server
 	// tool reports throughput — node_exporter counts bytes, hence the *8.
