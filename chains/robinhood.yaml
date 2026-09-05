@@ -31,22 +31,11 @@ metric_map:
   testMO_current_block: "chain_head_block"
   testMO_blocks_per_min: "deriv(chain_head_block[5m]) * 60"
 
-  # Sequencer feed -> execution -> L1 confirmation position.
-  # latest - inblock = execution lag; inblock - confirmed = L1 confirmation lag.
-  testMO_msg_latest: "arb_sequencenumber_latest"
-  testMO_msg_inblock: "arb_sequencenumber_inblock"
-  testMO_msg_confirmed: "arb_sequencenumber_confirmed"
-
   # Probe-side RPC latency (round trip from the agent)
   testMO_rpc_latency_ms: 'probe_call_duration_ms{call="probe_syncing"}'
   testMO_rpc_latency_p50_ms: 'quantile_over_time(0.50, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p95_ms: 'quantile_over_time(0.95, probe_call_duration_ms{call="probe_syncing"}[30m])'
   testMO_rpc_latency_p99_ms: 'quantile_over_time(0.99, probe_call_duration_ms{call="probe_syncing"}[30m])'
-
-  # Server-side RPC latency as Nitro measures it. Nanoseconds at the source.
-  testMO_rpc_server_latency_p50_ms: 'rpc_duration_all{quantile="0.5"} / 1e6'
-  testMO_rpc_server_latency_p95_ms: 'rpc_duration_all{quantile="0.95"} / 1e6'
-  testMO_rpc_server_latency_p99_ms: 'rpc_duration_all{quantile="0.99"} / 1e6'
 
   testMO_rpc_requests_total: "rpc_requests"
   testMO_rpc_success_total: "rpc_success"
